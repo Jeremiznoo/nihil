@@ -120,6 +120,24 @@ class NihilController:
     def _container_uses_host_network(self, container) -> bool:
         return (container.attrs.get("HostConfig") or {}).get("NetworkMode") == "host"
 
+    def _start_vpn_with_feedback(self, container, config_path: str = "/opt/nihil/vpn/client.ovpn") -> None:
+        """Start OpenVPN inside the container and wait for the tunnel with a visual spinner."""
+        try:
+            with self._loading("Starting OpenVPN and waiting for tunnel (tun0)..."):
+                connected = self.manager.start_vpn(container, config_path=config_path)
+            if connected:
+                print(self.formatter.success("VPN tunnel established."))
+            else:
+                print(self.formatter.warning(
+                    "VPN tunnel did not come up within the timeout. "
+                    "OpenVPN may still be connecting in background; "
+                    "check with 'ip a show tun0' or 'cat /var/log/nihil/vpn.log' inside the container."
+                ))
+        except KeyboardInterrupt:
+            print(self.formatter.warning(
+                "Skipping VPN wait (Ctrl+C). OpenVPN is still starting in background."
+            ))
+
     @staticmethod
     def _apply_profile(args, profile: Dict) -> None:
         """Fill options omitted on the command line with profile values."""
@@ -363,6 +381,11 @@ class NihilController:
                 if verbose:
                     print(self.formatter.success(f"Container '{container_name}' started successfully."))
             env_list = container.attrs.get("Config", {}).get("Env") or []
+            container_has_vpn_config = any(
+                e in ("NIHIL_VPN=managed", "NIHIL_VPN=1") for e in env_list
+            )
+            if container_has_vpn_config and not self.manager.wait_for_vpn(container, timeout=2):
+                self._start_vpn_with_feedback(container)
             delay_info = not args.no_shell and any(e == "NIHIL_BROWSER_UI=1" for e in env_list)
             if verbose and not delay_info:
                 self._print_container_info(container, args, created=False, update_available=get_update(container))
@@ -490,6 +513,8 @@ class NihilController:
                         print(self.formatter.success("User setup script completed."))
                 except RuntimeError as e:
                     print(self.formatter.warning(f"User setup script failed: {e}"))
+            if bool(vpn_path):
+                self._start_vpn_with_feedback(container)
             if verbose and not (browser_ui_enabled and not args.no_shell):
                 self._print_container_info(container, args, created=True, update_available=get_update(container))
         if not args.no_shell:
@@ -509,13 +534,7 @@ class NihilController:
                     vpn_file = Path(vpn_path).expanduser().resolve()
                     if vpn_file.is_file():
                         if self.manager.copy_file_into_container(container, str(vpn_file), "/tmp/nihil_vpn.ovpn"):
-                            print(self.formatter.info("VPN config copied into container; VPN will start for this session and stop when you exit."))
-                            vpn_script = (
-                                "openvpn --config /tmp/nihil_vpn.ovpn --daemon >/dev/null 2>&1; "
-                                f"sleep 2; {command}; "
-                                "killall openvpn >/dev/null 2>&1; exit 0"
-                            )
-                            command = f"sh -c {shlex.quote(vpn_script)}"
+                            self._start_vpn_with_feedback(container, config_path="/tmp/nihil_vpn.ovpn")
                         else:
                             print(self.formatter.warning("Could not copy VPN config into container. Start OpenVPN manually if needed."))
                     else:
@@ -628,7 +647,7 @@ class NihilController:
             my_resources_display = f"[green]Enabled[/] ({my_resources_mount} → /opt/my-resources)"
         else:
             my_resources_display = "[red]Disabled[/]"
-        vpn_flag = env.get("NIHIL_VPN") == "1"
+        vpn_flag = env.get("NIHIL_VPN") in ("1", "managed")
         requested_session_vpn = bool(getattr(args, "vpn", None)) and not created
         has_tun = False
         try:
@@ -636,7 +655,7 @@ class NihilController:
         except Exception:
             has_tun = False
         if vpn_flag:
-            vpn_display = "[green]Enabled[/] (NIHIL_VPN=1)"
+            vpn_display = "[green]Enabled[/]"
         elif requested_session_vpn and has_tun:
             vpn_display = "[yellow]Session only[/] (config copied inside)"
         else:
