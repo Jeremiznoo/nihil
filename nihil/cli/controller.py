@@ -384,7 +384,8 @@ class NihilController:
             container_has_vpn_config = any(
                 e in ("NIHIL_VPN=managed", "NIHIL_VPN=1") for e in env_list
             )
-            if container_has_vpn_config and not self.manager.wait_for_vpn(container, timeout=2):
+            session_vpn_requested = bool(getattr(args, "vpn", None))
+            if container_has_vpn_config and not session_vpn_requested and not self.manager.wait_for_vpn(container, timeout=2):
                 self._start_vpn_with_feedback(container)
             delay_info = not args.no_shell and any(e == "NIHIL_BROWSER_UI=1" for e in env_list)
             if verbose and not delay_info:
@@ -534,7 +535,9 @@ class NihilController:
                     vpn_file = Path(vpn_path).expanduser().resolve()
                     if vpn_file.is_file():
                         if self.manager.copy_file_into_container(container, str(vpn_file), "/tmp/nihil_vpn.ovpn"):
+                            container.exec_run(["killall", "openvpn"])
                             self._start_vpn_with_feedback(container, config_path="/tmp/nihil_vpn.ovpn")
+                            command = f"sh -c {shlex.quote(command + '; killall openvpn >/dev/null 2>&1')}"
                         else:
                             print(self.formatter.warning("Could not copy VPN config into container. Start OpenVPN manually if needed."))
                     else:
@@ -1227,7 +1230,12 @@ class NihilController:
             try:
                 new_container = self.manager.recreate_container(snapshot)
                 self.manager.start_container(new_container)
-                
+
+                new_env = new_container.attrs.get("Config", {}).get("Env") or []
+                if any(e in ("NIHIL_VPN=managed", "NIHIL_VPN=1") for e in new_env):
+                    if not self.manager.wait_for_vpn(new_container, timeout=2):
+                        self._start_vpn_with_feedback(new_container)
+
                 if saved_files:
                     print(self.formatter.info("Restoring container specific files..."))
                     self.manager.restore_container_data(new_container, saved_files)
