@@ -733,6 +733,10 @@ class NihilManager:
 
     def start_vpn(self, container, config_path: str = "/opt/nihil/vpn/client.ovpn") -> bool:
         """Start OpenVPN inside the container and wait for the tunnel."""
+        env = container.attrs.get("Config", {}).get("Env") or []
+        # Legacy entrypoints still own startup, even when their setup is slow.
+        if "NIHIL_VPN=1" in env and config_path == "/opt/nihil/vpn/client.ovpn":
+            return self.wait_for_vpn(container)
         container.exec_run(["mkdir", "-p", "/var/log/nihil"])
         container.exec_run(
             ["openvpn", "--log-append", "/var/log/nihil/vpn.log",

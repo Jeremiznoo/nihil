@@ -518,30 +518,37 @@ class NihilController:
                 self._start_vpn_with_feedback(container)
             if verbose and not (browser_ui_enabled and not args.no_shell):
                 self._print_container_info(container, args, created=True, update_available=get_update(container))
-        if not args.no_shell:
-            command = self._start_shell_command(args)
-            try:
-                vpn_path = self._resolve_vpn_config_path(getattr(args, "vpn", None))
-            except (FileNotFoundError, ValueError) as e:
-                print(self.formatter.error(str(e)), file=sys.stderr)
-                return 1
-            if container_existed and vpn_path:
-                if not self.manager.container_has_tun(container):
-                    print(self.formatter.error(
-                        "This container has no VPN support (/dev/net/tun missing). "
-                        "To use VPN, create a new container with --vpn, e.g.: nihil remove demo && nihil start demo --vpn ~/vpn/file.ovpn"
-                    ))
-                else:
-                    vpn_file = Path(vpn_path).expanduser().resolve()
-                    if vpn_file.is_file():
-                        if self.manager.copy_file_into_container(container, str(vpn_file), "/tmp/nihil_vpn.ovpn"):
-                            container.exec_run(["killall", "openvpn"])
-                            self._start_vpn_with_feedback(container, config_path="/tmp/nihil_vpn.ovpn")
-                            command = f"sh -c {shlex.quote(command + '; killall openvpn >/dev/null 2>&1')}"
-                        else:
-                            print(self.formatter.warning("Could not copy VPN config into container. Start OpenVPN manually if needed."))
+        command = self._start_shell_command(args)
+        try:
+            vpn_path = self._resolve_vpn_config_path(getattr(args, "vpn", None))
+        except (FileNotFoundError, ValueError) as e:
+            print(self.formatter.error(str(e)), file=sys.stderr)
+            return 1
+        if container_existed and vpn_path:
+            if not self.manager.container_has_tun(container):
+                print(self.formatter.error(
+                    "This container has no VPN support (/dev/net/tun missing). "
+                    "To use VPN, create a new container with --vpn, e.g.: nihil remove demo && nihil start demo --vpn ~/vpn/file.ovpn"
+                ))
+            else:
+                vpn_file = Path(vpn_path).expanduser().resolve()
+                if vpn_file.is_file():
+                    env_list = container.attrs.get("Config", {}).get("Env") or []
+                    if "NIHIL_VPN=1" in env_list:
+                        with self._loading("Waiting for the legacy VPN before replacing it..."):
+                            legacy_ready = self.manager.wait_for_vpn(container)
+                        if not legacy_ready:
+                            print(self.formatter.error("Legacy VPN is not ready; refusing to start a competing OpenVPN process. Retry after startup completes."))
+                            return 1
+                    if self.manager.copy_file_into_container(container, str(vpn_file), "/tmp/nihil_vpn.ovpn"):
+                        container.exec_run(["killall", "openvpn"])
+                        self._start_vpn_with_feedback(container, config_path="/tmp/nihil_vpn.ovpn")
+                        command = f"sh -c {shlex.quote(command + '; killall openvpn >/dev/null 2>&1')}"
                     else:
-                        print(self.formatter.warning(f"VPN file not found: {vpn_file}"))
+                        print(self.formatter.warning("Could not copy VPN config into container. Start OpenVPN manually if needed."))
+                else:
+                    print(self.formatter.warning(f"VPN file not found: {vpn_file}"))
+        if not args.no_shell:
             if args.log and not command.startswith("sh -c "):
                 import datetime
                 timestamp = datetime.datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
