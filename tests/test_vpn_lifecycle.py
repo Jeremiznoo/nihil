@@ -30,6 +30,7 @@ def test_managed_start_launches_openvpn():
     assert manager.start_vpn(container) is True
     container.exec_run.assert_any_call(
         ["openvpn", "--log-append", "/var/log/nihil/vpn.log",
+         "--mssfix", "1380",
          "--config", "/opt/nihil/vpn/client.ovpn"], detach=True,
     )
 
