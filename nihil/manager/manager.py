@@ -740,6 +740,7 @@ class NihilManager:
         container.exec_run(["mkdir", "-p", "/var/log/nihil"])
         container.exec_run(
             ["openvpn", "--log-append", "/var/log/nihil/vpn.log",
+             "--mssfix", "1380",
              "--config", config_path],
             detach=True,
         )
